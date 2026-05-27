@@ -8,12 +8,14 @@ import {
 import { firebaseReady } from '@/config/firebase';
 import { firebaseAuth } from './app';
 import type { AuthProfile } from '@/types';
+import { createLogger } from '@/lib/logger';
 
 const LOCAL_STORAGE_KEY = 'secureship-local-auth';
 const AUTH_RATE_LIMIT_KEY = 'secureship-auth-rate-limit';
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_LOCK_MS = 15 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
+const authLogger = createLogger('auth');
 
 export class AuthSubmissionLockedError extends Error {
   retryAfterMs: number;
@@ -43,6 +45,82 @@ function createLocalUser(email: string): AuthProfile {
     displayName: safeName,
     provider: 'local'
   };
+}
+
+async function refreshAuthToken(user: FirebaseUser | null | undefined) {
+  if (!user) {
+    return false;
+  }
+
+  try {
+    await user.getIdToken(true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function waitForFirebaseAuthSession(expectedUid?: string, timeoutMs = 5000) {
+  const auth = firebaseAuth;
+
+  if (!auth) {
+    throw new Error('Firebase Auth is not available.');
+  }
+
+  const currentUser = auth.currentUser;
+  authLogger.debug('wait for auth session start', {
+    authCurrentUser: currentUser,
+    uid: expectedUid,
+    tokenAvailable: Boolean(currentUser)
+  });
+
+  if (currentUser && (!expectedUid || currentUser.uid === expectedUid)) {
+    const tokenAvailable = await refreshAuthToken(currentUser);
+    authLogger.debug('wait for auth session ready', {
+      authCurrentUser: auth.currentUser,
+      uid: currentUser.uid,
+      tokenAvailable
+    });
+    return currentUser;
+  }
+
+  return await new Promise<FirebaseUser>((resolve, reject) => {
+    let unsubscribe: (() => void) | null = null;
+    const timeout = window.setTimeout(() => {
+      unsubscribe?.();
+      reject(new Error('Timed out waiting for Firebase auth session.'));
+    }, timeoutMs);
+
+    unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        authLogger.debug('wait for auth session pending', {
+          authCurrentUser: auth.currentUser,
+          uid: expectedUid,
+          tokenAvailable: false
+        });
+        return;
+      }
+
+      if (expectedUid && user.uid !== expectedUid) {
+        authLogger.debug('wait for auth session uid mismatch', {
+          authCurrentUser: auth.currentUser,
+          uid: expectedUid,
+          tokenAvailable: false
+        });
+        return;
+      }
+
+      unsubscribe?.();
+      window.clearTimeout(timeout);
+      const tokenAvailable = await refreshAuthToken(user);
+      authLogger.debug('wait for auth session ready', {
+        authCurrentUser: auth.currentUser,
+        uid: user.uid,
+        tokenAvailable
+      });
+      resolve(user);
+    });
+  });
 }
 
 function readLocalUser(): AuthProfile | null {
@@ -199,9 +277,9 @@ export async function watchAuthState(onChange: (user: AuthProfile | null) => voi
 
   return onAuthStateChanged(firebaseAuth, (user) => {
     if (user) {
-      console.debug('[auth] session restored', { uid: user.uid });
+      authLogger.debug('session restored', { authCurrentUser: firebaseAuth?.currentUser, uid: user.uid });
     } else {
-      console.debug('[auth] session cleared');
+      authLogger.debug('session cleared', { authCurrentUser: firebaseAuth?.currentUser });
     }
     onChange(user ? mapFirebaseUser(user) : null);
   });
@@ -226,6 +304,8 @@ export async function signUp(email: string, password: string) {
   }
 
   const credential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
+  await credential.user.getIdToken(true);
+  await waitForFirebaseAuthSession(credential.user.uid);
   return mapFirebaseUser(credential.user);
 }
 
@@ -246,11 +326,15 @@ export async function signInWithRateLimit(email: string, password: string) {
     const user = await signIn(email, password);
     clearAuthFailures(action, email);
     if (firebaseReady && user.provider === 'firebase') {
-      console.debug('[auth] sign-in success', { uid: user.uid });
+      authLogger.debug('sign-in success', {
+        authCurrentUser: firebaseAuth?.currentUser,
+        uid: user.uid,
+        tokenAvailable: Boolean(firebaseAuth?.currentUser)
+      });
     }
     return user;
   } catch (error) {
-    console.debug('[auth] sign-in failed', { email, error });
+    authLogger.debug('sign-in failed', { email, error });
     recordAuthFailure(action, email);
     throw error;
   }
@@ -264,11 +348,15 @@ export async function signUpWithRateLimit(email: string, password: string) {
     const user = await signUp(email, password);
     clearAuthFailures(action, email);
     if (firebaseReady && user.provider === 'firebase') {
-      console.debug('[auth] sign-up success', { uid: user.uid });
+      authLogger.debug('sign-up success', {
+        authCurrentUser: firebaseAuth?.currentUser,
+        uid: user.uid,
+        tokenAvailable: Boolean(firebaseAuth?.currentUser)
+      });
     }
     return user;
   } catch (error) {
-    console.debug('[auth] sign-up failed', { email, error });
+    authLogger.debug('sign-up failed', { email, error });
     recordAuthFailure(action, email);
     throw error;
   }

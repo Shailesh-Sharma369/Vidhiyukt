@@ -4,6 +4,9 @@ import type { GeneratedDocument } from '@/types';
 import type { SecureDocument, SecureDocumentInput, SecureDocumentPatch, SecureDocumentStatus } from '@/types/firestore';
 import { deserializeGeneratedDocumentContent, serializeGeneratedDocumentContent } from './serializers';
 import { firestoreTimestampToMillis, requireAuthUid, requireFirestoreDb, withFirestoreErrorHandling } from './shared';
+import { createLogger } from '@/lib/logger';
+
+const documentsLogger = createLogger('firestore][documents');
 
 function getDocumentsCollection() {
   return collection(requireFirestoreDb(), 'documents');
@@ -51,7 +54,7 @@ export async function createDocument(user: { uid: string }, document: GeneratedD
     try {
       await setDoc(ref, payload);
     } catch (error) {
-      console.error('[firestore][documents] create failed', { uid: createdBy, path: `documents/${ref.id}`, payload, error });
+      documentsLogger.error('create failed', { uid: createdBy, path: `documents/${ref.id}`, payload, error });
       throw error;
     }
 
@@ -99,7 +102,7 @@ export async function updateDocument(user: { uid: string }, documentId: string, 
     try {
       await updateDoc(ref, updatePayload);
     } catch (error) {
-      console.error('[firestore][documents] update failed', { uid: createdBy, path: `documents/${documentId}`, payload: updatePayload, error });
+      documentsLogger.error('update failed', { uid: createdBy, path: `documents/${documentId}`, payload: updatePayload, error });
       throw error;
     }
 
@@ -146,7 +149,7 @@ export async function getUserDocuments(user: { uid: string }): Promise<Generated
         .sort((left, right) => firestoreTimestampToMillis(right.createdAt) - firestoreTimestampToMillis(left.createdAt))
         .map((record) => mapFirestoreDocument(record));
     } catch (error) {
-      console.error('[firestore][documents] read failed', { uid: createdBy, query: { collection: 'documents', createdBy }, error });
+      documentsLogger.error('read failed', { uid: createdBy, query: { collection: 'documents', createdBy }, error });
       throw error;
     }
   });

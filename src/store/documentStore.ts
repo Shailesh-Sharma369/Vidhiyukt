@@ -7,6 +7,9 @@ import { createDocument, getUserDocuments } from '@/services/firestore/documents
 import { deserializeGeneratedDocumentContent } from '@/services/firestore/serializers';
 import { FirestoreServiceError } from '@/services/firestore/shared';
 import { showToast } from '@/store/toastStore';
+import { createLogger } from '@/lib/logger';
+
+const documentsLogger = createLogger('firestore][documents');
 
 type DocumentStore = {
   draft: DocumentDraft;
@@ -52,15 +55,15 @@ export const useDocumentStore = create<DocumentStore>()(
         set({ isLoadingDocuments: true });
 
         try {
-          console.debug('[firestore][documents] load start', { uid: user.uid });
+          documentsLogger.debug('load start', { uid: user.uid });
           const documents = await getUserDocuments(user);
           set({
             generatedDocuments: documents,
             activeDocumentId: documents[0]?.id ?? null
           });
-          console.debug('[firestore][documents] load success', { uid: user.uid, count: documents.length });
+          documentsLogger.debug('load success', { uid: user.uid, count: documents.length });
         } catch (error) {
-          console.debug('[firestore][documents] load failed', { uid: user.uid, error });
+          documentsLogger.debug('load failed', { uid: user.uid, error });
           const message = error instanceof Error ? error.message : 'Failed to load your documents.';
           showToast({ title: 'Document sync failed', description: message, variant: 'error' });
         } finally {
@@ -77,7 +80,7 @@ export const useDocumentStore = create<DocumentStore>()(
         set({ isGenerating: true });
 
         try {
-          console.debug('[firestore][documents] write start', { uid: user.uid });
+          documentsLogger.debug('write start', { uid: user.uid });
           const document = await generateLegalDocument(get().draft);
           set((state) => ({
             generatedDocuments: [document, ...state.generatedDocuments.filter((item) => item.id !== document.id)].slice(0, 10),
@@ -92,11 +95,11 @@ export const useDocumentStore = create<DocumentStore>()(
             activeDocumentId: hydratedDocument.id
           }));
 
-          console.debug('[firestore][documents] write success', { uid: user.uid, id: hydratedDocument.id });
+          documentsLogger.debug('write success', { uid: user.uid, id: hydratedDocument.id });
 
           return hydratedDocument;
         } catch (error) {
-          console.debug('[firestore][documents] write failed', { uid: user.uid, error });
+          documentsLogger.debug('write failed', { uid: user.uid, error });
           const message = error instanceof Error ? error.message : 'Failed to generate or sync the document.';
           showToast({ title: 'Document generation failed', description: message, variant: 'error' });
           throw error;

@@ -3,6 +3,9 @@ import type { ComplianceReport } from '@/types';
 import type { Report, ReportInput, ReportPatch, ReportType } from '@/types/firestore';
 import { deserializeComplianceReportContent, serializeComplianceReportContent } from './serializers';
 import { firestoreTimestampToMillis, requireAuthUid, requireFirestoreDb, withFirestoreErrorHandling } from './shared';
+import { createLogger } from '@/lib/logger';
+
+const reportsLogger = createLogger('firestore][reports');
 
 function getReportsCollection() {
   return collection(requireFirestoreDb(), 'reports');
@@ -50,7 +53,7 @@ export async function createReport(user: { uid: string }, report: ComplianceRepo
     try {
       await setDoc(ref, payload);
     } catch (error) {
-      console.error('[firestore][reports] create failed', { uid: createdBy, path: `reports/${ref.id}`, payload, error });
+      reportsLogger.error('create failed', { uid: createdBy, path: `reports/${ref.id}`, payload, error });
       throw error;
     }
 
@@ -97,7 +100,7 @@ export async function updateReport(user: { uid: string }, reportId: string, patc
     try {
       await updateDoc(ref, updatePayload);
     } catch (error) {
-      console.error('[firestore][reports] update failed', { uid: createdBy, path: `reports/${reportId}`, payload: updatePayload, error });
+      reportsLogger.error('update failed', { uid: createdBy, path: `reports/${reportId}`, payload: updatePayload, error });
       throw error;
     }
 
@@ -144,7 +147,7 @@ export async function getUserReports(user: { uid: string }): Promise<ComplianceR
         .sort((left, right) => firestoreTimestampToMillis(right.createdAt) - firestoreTimestampToMillis(left.createdAt))
         .map((record) => mapFirestoreReport(record));
     } catch (error) {
-      console.error('[firestore][reports] read failed', { uid: createdBy, query: { collection: 'reports', createdBy }, error });
+      reportsLogger.error('read failed', { uid: createdBy, query: { collection: 'reports', createdBy }, error });
       throw error;
     }
   });

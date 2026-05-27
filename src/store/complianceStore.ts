@@ -8,6 +8,10 @@ import { createReport, getUserReports } from '@/services/firestore/reports';
 import { deserializeComplianceReportContent } from '@/services/firestore/serializers';
 import { FirestoreServiceError } from '@/services/firestore/shared';
 import { showToast } from '@/store/toastStore';
+import { createLogger } from '@/lib/logger';
+
+const reportsLogger = createLogger('firestore][reports');
+const auditsLogger = createLogger('firestore][audits');
 
 type ComplianceStore = {
   request: ComplianceAuditRequest;
@@ -52,16 +56,16 @@ export const useComplianceStore = create<ComplianceStore>()(
         set({ isLoadingHistory: true });
 
         try {
-          console.debug('[firestore][reports] load start', { uid: user.uid });
+          reportsLogger.debug('load start', { uid: user.uid });
           const reports = await getUserReports(user);
           set({
             history: reports,
             report: reports[0] ?? null,
             scorecard: reports[0]?.scorecard ?? null
           });
-          console.debug('[firestore][reports] load success', { uid: user.uid, count: reports.length });
+          reportsLogger.debug('load success', { uid: user.uid, count: reports.length });
         } catch (error) {
-          console.debug('[firestore][reports] load failed', { uid: user.uid, error });
+          reportsLogger.debug('load failed', { uid: user.uid, error });
           const message = error instanceof Error ? error.message : 'Failed to load your reports.';
           showToast({ title: 'Report sync failed', description: message, variant: 'error' });
         } finally {
@@ -78,7 +82,7 @@ export const useComplianceStore = create<ComplianceStore>()(
         set({ isAuditing: true });
 
         try {
-          console.debug('[firestore][audits] audit write start', { uid: user.uid });
+          auditsLogger.debug('audit write start', { uid: user.uid });
           const { scorecard, report } = await runAudit(get().request);
           const savedReport = await createReport(user, report, 'summary');
           const hydratedReport = deserializeComplianceReportContent(savedReport);
@@ -99,9 +103,9 @@ export const useComplianceStore = create<ComplianceStore>()(
             report: hydratedReport,
             history: [hydratedReport, ...state.history.filter((item) => item.id !== hydratedReport.id)].slice(0, 8)
           }));
-          console.debug('[firestore][audits] audit write success', { uid: user.uid, reportId: savedReport.id });
+          auditsLogger.debug('audit write success', { uid: user.uid, reportId: savedReport.id });
         } catch (error) {
-          console.debug('[firestore][audits] audit write failed', { uid: user.uid, error });
+          auditsLogger.debug('audit write failed', { uid: user.uid, error });
           const message = error instanceof Error ? error.message : 'Failed to run or sync the audit.';
           showToast({ title: 'Audit failed', description: message, variant: 'error' });
           throw error;

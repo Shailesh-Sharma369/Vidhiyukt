@@ -1,6 +1,9 @@
 import { collection, getDoc, getDocs, query, serverTimestamp, addDoc, where } from 'firebase/firestore';
 import type { AuditLog, AuditLogInput } from '@/types/firestore';
 import { firestoreTimestampToMillis, requireAuthUid, requireFirestoreDb, withFirestoreErrorHandling } from './shared';
+import { createLogger } from '@/lib/logger';
+
+const auditsLogger = createLogger('firestore][audits');
 
 function getAuditsCollection() {
   return collection(requireFirestoreDb(), 'audits');
@@ -32,7 +35,7 @@ export async function createAuditLog(user: { uid: string }, input: AuditLogInput
       const snapshot = await getDoc(ref);
       return mapAuditRecord(ref.id, snapshot.data() as Omit<AuditLog, 'id'>);
     } catch (error) {
-      console.error('[firestore][audits] create failed', { uid: createdBy, path: 'audits/*', payload: writePayload, error });
+      auditsLogger.error('create failed', { uid: createdBy, path: 'audits/*', payload: writePayload, error });
       throw error;
     }
   });
@@ -50,7 +53,7 @@ export async function getUserAudits(user: { uid: string }): Promise<AuditLog[]> 
         .map((record) => mapAuditRecord(record.id, record.data() as Omit<AuditLog, 'id'>))
         .sort((left, right) => firestoreTimestampToMillis(right.createdAt) - firestoreTimestampToMillis(left.createdAt));
     } catch (error) {
-      console.error('[firestore][audits] read failed', { uid: createdBy, query: { collection: 'audits', createdBy }, error });
+      auditsLogger.error('read failed', { uid: createdBy, query: { collection: 'audits', createdBy }, error });
       throw error;
     }
   });

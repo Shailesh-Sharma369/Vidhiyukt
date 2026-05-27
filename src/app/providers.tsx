@@ -6,9 +6,12 @@ import { ToastViewport } from '@/components/common/toast-viewport';
 import { stopAuthSubscription } from '@/store/authStore';
 import { useDocumentStore } from '@/store/documentStore';
 import { useComplianceStore } from '@/store/complianceStore';
-import { ensureUserProfile } from '@/services/firestore/users';
+import { syncUserProfile } from '@/services/firestore/users';
 import { showToast } from '@/store/toastStore';
 import { firebaseReady } from '@/config/firebase';
+import { createLogger } from '@/lib/logger';
+
+const bootstrapLogger = createLogger('firestore][bootstrap');
 
 function AuthBootstrap() {
   const initialize = useAuthStore((state) => state.initialize);
@@ -50,18 +53,18 @@ function FirestoreBootstrap() {
 
     void (async () => {
       try {
-        console.debug('[firestore][bootstrap] profile sync start', { uid: user.uid });
+        bootstrapLogger.debug('profile sync start', { authCurrentUser: user, uid: user.uid });
         if (!firebaseReady) {
-          console.debug('[firestore][bootstrap] firebase unavailable, skipping sync', { uid: user.uid });
+          bootstrapLogger.debug('firebase unavailable, skipping sync', { authCurrentUser: user, uid: user.uid });
           return;
         }
 
-        await ensureUserProfile(user);
-        console.debug('[firestore][bootstrap] hydration start', { uid: user.uid });
+        await syncUserProfile(user);
+        bootstrapLogger.debug('hydration start', { authCurrentUser: user, uid: user.uid });
         await Promise.all([loadUserDocuments(), loadUserReports()]);
-        console.debug('[firestore][bootstrap] hydration end', { uid: user.uid });
+        bootstrapLogger.debug('hydration end', { authCurrentUser: user, uid: user.uid });
       } catch (error) {
-        console.debug('[firestore][bootstrap] sync failed', { uid: user.uid, error });
+        bootstrapLogger.debug('sync failed', { authCurrentUser: user, uid: user.uid, error });
         const message = error instanceof Error ? error.message : 'Failed to sync your Firestore workspace.';
         showToast({ title: 'Workspace sync failed', description: message, variant: 'error' });
       }

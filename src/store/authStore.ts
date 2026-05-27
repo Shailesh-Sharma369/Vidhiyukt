@@ -7,8 +7,11 @@ import {
   signUpWithRateLimit,
   watchAuthState
 } from '@/services/firebase/auth';
+import { firebaseReady } from '@/config/firebase';
+import { syncUserProfile } from '@/services/firestore/users';
 import type { AuthProfile, AuthStatus } from '@/types';
 import { showToast } from '@/store/toastStore';
+import { createLogger } from '@/lib/logger';
 
 type AuthStore = {
   user: AuthProfile | null;
@@ -23,6 +26,7 @@ type AuthStore = {
 };
 
 let unsubscribeAuth: (() => void) | null = null;
+const authLogger = createLogger('auth');
 
 function emitAuthError(set: (partial: Partial<AuthStore>) => void, error: unknown) {
   const message = getAuthErrorMessage(error);
@@ -74,6 +78,13 @@ export const useAuthStore = create<AuthStore>()((set, get) => ({
 
     try {
       const user = await signInWithRateLimit(email, password);
+      if (firebaseReady && user.provider === 'firebase') {
+        authLogger.debug('profile sync after login', { authCurrentUser: user, uid: user.uid });
+        await syncUserProfile(user).catch((error) => {
+          authLogger.error('profile sync failed after login', { authCurrentUser: user, uid: user.uid, error });
+          throw error;
+        });
+      }
       clearAuthRateLimit(email);
       set({ user, status: 'authenticated', initialized: true, error: null });
     } catch (error) {
@@ -98,6 +109,13 @@ export const useAuthStore = create<AuthStore>()((set, get) => ({
 
     try {
       const user = await signUpWithRateLimit(email, password);
+      if (firebaseReady && user.provider === 'firebase') {
+        authLogger.debug('profile sync after register', { authCurrentUser: user, uid: user.uid });
+        await syncUserProfile(user).catch((error) => {
+          authLogger.error('profile sync failed after register', { authCurrentUser: user, uid: user.uid, error });
+          throw error;
+        });
+      }
       clearAuthRateLimit(email);
       set({ user, status: 'authenticated', initialized: true, error: null });
     } catch (error) {

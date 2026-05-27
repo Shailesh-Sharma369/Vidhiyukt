@@ -2,7 +2,11 @@ import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firest
 import type { AuthProfile } from '@/types';
 import type { NewUserProfileInput, UpdateUserProfileInput, UserProfile } from '@/types/firestore';
 import { firebaseAuth } from '@/services/firebase/app';
+import { createLogger } from '@/lib/logger';
+import { waitForFirebaseAuthSession } from '@/services/firebase/auth';
 import { normalizeFirestoreError, requireAuthUid, requireFirestoreDb, withFirestoreErrorHandling } from './shared';
+
+const usersLogger = createLogger('firestore][users');
 
 function getUserDocRef(uid: string) {
   const db = requireFirestoreDb();
@@ -17,7 +21,20 @@ async function refreshAuthTokenOnce() {
   await firebaseAuth?.currentUser?.getIdToken(true).catch(() => undefined);
 }
 
-async function retryOnceOnPermissionDenied<T>(operation: () => Promise<T>) {
+async function ensureFirestoreAuthSession(uid: string) {
+  const currentUser = await waitForFirebaseAuthSession(uid);
+  const tokenAvailable = await currentUser.getIdToken(true).then(() => true).catch(() => false);
+
+  usersLogger.debug('auth session ready', {
+    authCurrentUser: firebaseAuth?.currentUser,
+    uid,
+    tokenAvailable
+  });
+
+  return currentUser;
+}
+
+async function retryOnceOnPermissionDenied<T>(operation: () => Promise<T>, refreshSession?: () => Promise<unknown>) {
   try {
     return await operation();
   } catch (error) {
@@ -27,6 +44,7 @@ async function retryOnceOnPermissionDenied<T>(operation: () => Promise<T>) {
       throw normalized;
     }
 
+    await refreshSession?.();
     await refreshAuthTokenOnce();
     return operation().catch((retryError) => {
       throw normalizeFirestoreError(retryError);
@@ -42,7 +60,8 @@ export async function createUserProfile(user: Pick<AuthProfile, 'uid' | 'email' 
   };
 
   return withFirestoreErrorHandling(async () => {
-    console.debug('[firestore][users] create profile start', { uid });
+    usersLogger.debug('create profile start', { authCurrentUser: firebaseAuth?.currentUser, uid });
+    await ensureFirestoreAuthSession(uid);
     const ref = getUserDocRef(uid);
     const payload = {
       name: input.name,
@@ -50,17 +69,30 @@ export async function createUserProfile(user: Pick<AuthProfile, 'uid' | 'email' 
       createdAt: serverTimestamp()
     };
 
-    const existing = await retryOnceOnPermissionDenied(() => getDoc(ref));
+    usersLogger.debug('create profile payload', {
+      authCurrentUser: firebaseAuth?.currentUser,
+      uid,
+      path: `users/${uid}`,
+      payload
+    });
+
+    const existing = await retryOnceOnPermissionDenied(() => getDoc(ref), () => ensureFirestoreAuthSession(uid));
 
     if (existing.exists()) {
-      console.debug('[firestore][users] profile already exists', { uid });
+      usersLogger.debug('profile already exists', { authCurrentUser: firebaseAuth?.currentUser, uid });
       return { uid: existing.id, ...(existing.data() as Omit<UserProfile, 'uid'>) };
     }
 
     try {
-      await retryOnceOnPermissionDenied(() => setDoc(ref, payload));
+      await retryOnceOnPermissionDenied(() => setDoc(ref, payload), () => ensureFirestoreAuthSession(uid));
     } catch (error) {
-      console.error('[firestore][users] create profile failed', { uid, path: `users/${uid}`, payload, error });
+      usersLogger.error('create profile failed', {
+        authCurrentUser: firebaseAuth?.currentUser,
+        uid,
+        path: `users/${uid}`,
+        payload,
+        error
+      });
       throw error;
     }
 
@@ -69,22 +101,22 @@ export async function createUserProfile(user: Pick<AuthProfile, 'uid' | 'email' 
       throw normalizeFirestoreError(new Error('Failed to create user profile.'));
     }
 
-    console.debug('[firestore][users] create profile success', { uid });
+    usersLogger.debug('create profile success', { authCurrentUser: firebaseAuth?.currentUser, uid });
     return { uid, ...(snapshot.data() as Omit<UserProfile, 'uid'>) };
   });
 }
 
 export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   return withFirestoreErrorHandling(async () => {
-    console.debug('[firestore][users] get profile start', { uid });
+    usersLogger.debug('get profile start', { authCurrentUser: firebaseAuth?.currentUser, uid });
     const ref = getUserDocRef(uid);
-    const snapshot = await retryOnceOnPermissionDenied(() => getDoc(ref));
+    const snapshot = await retryOnceOnPermissionDenied(() => getDoc(ref), () => ensureFirestoreAuthSession(uid));
     if (!snapshot.exists()) {
-      console.debug('[firestore][users] get profile miss', { uid });
+      usersLogger.debug('get profile miss', { authCurrentUser: firebaseAuth?.currentUser, uid });
       return null;
     }
 
-    console.debug('[firestore][users] get profile success', { uid });
+    usersLogger.debug('get profile success', { authCurrentUser: firebaseAuth?.currentUser, uid });
     return { uid: snapshot.id, ...(snapshot.data() as Omit<UserProfile, 'uid'>) };
   });
 }
@@ -108,9 +140,15 @@ export async function updateUserProfile(uid: string, patch: UpdateUserProfileInp
     };
 
     try {
-      await retryOnceOnPermissionDenied(() => updateDoc(ref, payload));
+      await retryOnceOnPermissionDenied(() => updateDoc(ref, payload), () => ensureFirestoreAuthSession(uid));
     } catch (error) {
-      console.error('[firestore][users] update profile failed', { uid, path: `users/${uid}`, payload, error });
+      usersLogger.error('update profile failed', {
+        authCurrentUser: firebaseAuth?.currentUser,
+        uid,
+        path: `users/${uid}`,
+        payload,
+        error
+      });
       throw error;
     }
 
@@ -125,11 +163,12 @@ export async function updateUserProfile(uid: string, patch: UpdateUserProfileInp
 
 export async function ensureUserProfile(user: Pick<AuthProfile, 'uid' | 'email' | 'displayName'>): Promise<UserProfile> {
   const uid = requireAuthUid(user);
-  console.debug('[firestore][users] ensure profile start', { uid });
+  usersLogger.debug('ensure profile start', { authCurrentUser: firebaseAuth?.currentUser, uid });
+  await ensureFirestoreAuthSession(uid);
   const existing = await retryOnceOnPermissionDenied(() => getUserProfile(uid));
 
   if (!existing) {
-    console.debug('[firestore][users] ensure profile create', { uid });
+    usersLogger.debug('ensure profile create', { authCurrentUser: firebaseAuth?.currentUser, uid });
     return createUserProfile(user);
   }
 
@@ -137,10 +176,39 @@ export async function ensureUserProfile(user: Pick<AuthProfile, 'uid' | 'email' 
   const desiredEmail = user.email.trim().toLowerCase();
 
   if (existing.name !== desiredName || existing.email !== desiredEmail || !existing.updatedAt) {
-    console.debug('[firestore][users] ensure profile update', { uid });
+    usersLogger.debug('ensure profile update', { authCurrentUser: firebaseAuth?.currentUser, uid });
     return updateUserProfile(uid, { name: desiredName, email: desiredEmail });
   }
 
-  console.debug('[firestore][users] ensure profile ready', { uid });
+  usersLogger.debug('ensure profile ready', { authCurrentUser: firebaseAuth?.currentUser, uid });
   return existing;
+}
+
+const profileSyncPromises = new Map<string, Promise<UserProfile>>();
+
+export function syncUserProfile(user: Pick<AuthProfile, 'uid' | 'email' | 'displayName'>): Promise<UserProfile> {
+  const uid = requireAuthUid(user);
+  const existingPromise = profileSyncPromises.get(uid);
+
+  if (existingPromise) {
+    usersLogger.debug('sync reuse', { authCurrentUser: firebaseAuth?.currentUser, uid });
+    return existingPromise;
+  }
+
+  usersLogger.debug('sync start', { authCurrentUser: firebaseAuth?.currentUser, uid });
+  const syncPromise = ensureUserProfile(user)
+    .then((profile) => {
+      usersLogger.debug('sync success', { authCurrentUser: firebaseAuth?.currentUser, uid });
+      return profile;
+    })
+    .catch((error) => {
+      usersLogger.debug('sync failed', { authCurrentUser: firebaseAuth?.currentUser, uid, error });
+      throw error;
+    })
+    .finally(() => {
+      profileSyncPromises.delete(uid);
+    });
+
+  profileSyncPromises.set(uid, syncPromise);
+  return syncPromise;
 }
