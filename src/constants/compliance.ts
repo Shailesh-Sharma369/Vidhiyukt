@@ -1,6 +1,6 @@
 import type { ComplianceFramework } from '@/types';
 
-export const complianceFrameworks: ComplianceFramework[] = ['GDPR', 'DPDP', 'AI Act'];
+export const complianceFrameworks = ['GDPR', 'DPDP', 'AI Act'] as const satisfies readonly ComplianceFramework[];
 
 export const compliancePrinciples = [
   'Data minimization and purpose limitation',

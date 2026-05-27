@@ -3,6 +3,7 @@ import { useDocumentTitle } from '@/hooks/use-document-title';
 import { DocumentGeneratorForm } from '@/components/forms/document-generator-form';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/common/empty-state';
+import { LoadingState } from '@/components/common/loading-state';
 import { useDocumentStore } from '@/store/documentStore';
 
 export function GeneratorPage() {
@@ -10,11 +11,16 @@ export function GeneratorPage() {
 
   const documents = useDocumentStore((state) => state.generatedDocuments);
   const activeDocumentId = useDocumentStore((state) => state.activeDocumentId);
+  const isLoadingDocuments = useDocumentStore((state) => state.isLoadingDocuments);
 
   const activeDocument = useMemo(
     () => documents.find((item) => item.id === activeDocumentId) ?? documents[0] ?? null,
     [activeDocumentId, documents]
   );
+
+  if (isLoadingDocuments && documents.length === 0) {
+    return <LoadingState title="Loading your documents" description="Syncing your Firestore workspace and recent legal drafts." />;
+  }
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">

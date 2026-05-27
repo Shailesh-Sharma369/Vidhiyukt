@@ -1,6 +1,6 @@
-# SecureShip
+# Vidhiyukt 
 
-SecureShip is a privacy-first AI compliance frontend foundation built with React, Vite, TypeScript, Tailwind CSS, Firebase, Zustand, React Router DOM, React Hook Form, Zod, Framer Motion, Lucide React, and TanStack Query.
+Vidhiyukt is a privacy-first AI compliance frontend foundation built with React, Vite, TypeScript, Tailwind CSS, Firebase, Zustand, React Router DOM, React Hook Form, Zod, Framer Motion, Lucide React, and TanStack Query.
 
 ## Setup
 

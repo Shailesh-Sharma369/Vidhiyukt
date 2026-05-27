@@ -34,12 +34,17 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   });
 
   const onSubmit = handleSubmit(async (values) => {
-    if (mode === 'login') {
-      await login(values.email, values.password);
-    } else {
-      await register(values.email, values.password);
+    try {
+      if (mode === 'login') {
+        await login(values.email, values.password);
+      } else {
+        await register(values.email, values.password);
+      }
+
+      navigate('/dashboard');
+    } catch {
+      return;
     }
-    navigate('/dashboard');
   });
 
   return (

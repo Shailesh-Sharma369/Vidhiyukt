@@ -1,7 +1,14 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import { signIn, signOut, signUp, watchAuthState } from '@/services/firebase/auth';
+import {
+  clearAuthRateLimit,
+  getAuthErrorMessage,
+  signInWithRateLimit,
+  signOut,
+  signUpWithRateLimit,
+  watchAuthState
+} from '@/services/firebase/auth';
 import type { AuthProfile, AuthStatus } from '@/types';
+import { showToast } from '@/store/toastStore';
 
 type AuthStore = {
   user: AuthProfile | null;
@@ -17,47 +24,116 @@ type AuthStore = {
 
 let unsubscribeAuth: (() => void) | null = null;
 
-export const useAuthStore = create<AuthStore>()(
-  persist(
-    (set, get) => ({
-      user: null,
-      status: 'idle',
-      error: null,
-      initialized: false,
-      initialize: async () => {
-        if (get().initialized) return;
-        set({ status: 'loading' });
-        unsubscribeAuth = await watchAuthState((user) => {
-          set({
-            user,
-            status: user ? 'authenticated' : 'anonymous',
-            initialized: true,
-            error: null
-          });
+function emitAuthError(set: (partial: Partial<AuthStore>) => void, error: unknown) {
+  const message = getAuthErrorMessage(error);
+  set({ error: message });
+  showToast({
+    title: 'Authentication failed',
+    description: message,
+    variant: 'error'
+  });
+}
+
+function isAuthBusy(status: AuthStatus) {
+  return status === 'loading';
+}
+
+export const useAuthStore = create<AuthStore>()((set, get) => ({
+  user: null,
+  status: 'idle',
+  error: null,
+  initialized: false,
+  initialize: async () => {
+    if (get().initialized) return;
+
+    set({ status: 'loading' });
+
+    try {
+      unsubscribeAuth = await watchAuthState((user) => {
+        set({
+          user,
+          status: user ? 'authenticated' : 'anonymous',
+          initialized: true,
+          error: null
         });
-      },
-      login: async (email, password) => {
-        set({ status: 'loading', error: null });
-        const user = await signIn(email, password);
-        set({ user, status: 'authenticated', initialized: true });
-      },
-      register: async (email, password) => {
-        set({ status: 'loading', error: null });
-        const user = await signUp(email, password);
-        set({ user, status: 'authenticated', initialized: true });
-      },
-      logout: async () => {
-        await signOut();
-        set({ user: null, status: 'anonymous' });
-      },
-      clearError: () => set({ error: null })
-    }),
-    {
-      name: 'secureship-auth',
-      partialize: (state) => ({ user: state.user, status: state.status, initialized: state.initialized })
+      });
+    } catch (error) {
+      emitAuthError(set, error);
+      set({ user: null, status: 'anonymous', initialized: true });
     }
-  )
-);
+  },
+  login: async (email, password) => {
+    if (isAuthBusy(get().status)) {
+      const message = 'Please wait for the current sign-in attempt to finish.';
+      set({ error: message });
+      showToast({ title: 'Authentication in progress', description: message, variant: 'error' });
+      throw new Error(message);
+    }
+
+    set({ status: 'loading', error: null });
+
+    try {
+      const user = await signInWithRateLimit(email, password);
+      clearAuthRateLimit(email);
+      set({ user, status: 'authenticated', initialized: true, error: null });
+    } catch (error) {
+      emitAuthError(set, error);
+      set({ user: null, status: 'anonymous', initialized: true });
+      throw error;
+    } finally {
+      if (get().status === 'loading') {
+        set({ status: 'anonymous' });
+      }
+    }
+  },
+  register: async (email, password) => {
+    if (isAuthBusy(get().status)) {
+      const message = 'Please wait for the current sign-up attempt to finish.';
+      set({ error: message });
+      showToast({ title: 'Authentication in progress', description: message, variant: 'error' });
+      throw new Error(message);
+    }
+
+    set({ status: 'loading', error: null });
+
+    try {
+      const user = await signUpWithRateLimit(email, password);
+      clearAuthRateLimit(email);
+      set({ user, status: 'authenticated', initialized: true, error: null });
+    } catch (error) {
+      emitAuthError(set, error);
+      set({ user: null, status: 'anonymous', initialized: true });
+      throw error;
+    } finally {
+      if (get().status === 'loading') {
+        set({ status: 'anonymous' });
+      }
+    }
+  },
+  logout: async () => {
+    if (isAuthBusy(get().status)) {
+      const message = 'Please wait for the current authentication operation to finish.';
+      set({ error: message });
+      showToast({ title: 'Authentication in progress', description: message, variant: 'error' });
+      throw new Error(message);
+    }
+
+    set({ status: 'loading', error: null });
+
+    try {
+      await signOut();
+      set({ user: null, status: 'anonymous', initialized: true, error: null });
+    } catch (error) {
+      emitAuthError(set, error);
+      throw error;
+    } finally {
+      if (get().status === 'loading') {
+        set({ status: 'anonymous' });
+      }
+    }
+  },
+  clearError: () => set({ error: null })
+}));
 
 export function stopAuthSubscription() {
   unsubscribeAuth?.();

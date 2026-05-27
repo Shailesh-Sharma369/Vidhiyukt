@@ -8,3 +8,4 @@ export function App() {
     </AppProviders>
   );
 }
+// console.log(app);

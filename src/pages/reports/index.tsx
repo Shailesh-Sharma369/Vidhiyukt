@@ -1,6 +1,7 @@
 import { useDocumentTitle } from '@/hooks/use-document-title';
 import { ReportViewer } from '@/components/compliance/report-viewer';
 import { EmptyState } from '@/components/common/empty-state';
+import { LoadingState } from '@/components/common/loading-state';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useComplianceStore } from '@/store/complianceStore';
 
@@ -9,6 +10,11 @@ export function ReportsPage() {
 
   const report = useComplianceStore((state) => state.report);
   const history = useComplianceStore((state) => state.history);
+  const isLoadingHistory = useComplianceStore((state) => state.isLoadingHistory);
+
+  if (isLoadingHistory && history.length === 0 && !report) {
+    return <LoadingState title="Loading your reports" description="Syncing audit history from Firestore." />;
+  }
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
