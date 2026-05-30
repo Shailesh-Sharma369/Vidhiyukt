@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { documentTypes, jurisdictionOptions, toneOptions } from '@/constants/documents';
+import type { JurisdictionType } from '@/types/intake';
 import { useDocumentStore } from '@/store/documentStore';
 
 const schema = z.object({
@@ -22,19 +23,23 @@ const schema = z.object({
 
 type Values = z.infer<typeof schema>;
 
+type DocumentGeneratorValues = Omit<Values, 'jurisdiction'> & {
+  jurisdiction: JurisdictionType | 'Both';
+};
+
 export function DocumentGeneratorForm() {
   const draft = useDocumentStore((state) => state.draft);
   const setDraft = useDocumentStore((state) => state.setDraft);
   const generateDocument = useDocumentStore((state) => state.generateDocument);
   const isGenerating = useDocumentStore((state) => state.isGenerating);
 
-  const defaultValues = useMemo<Values>(() => draft, [draft]);
+  const defaultValues = useMemo<DocumentGeneratorValues>(() => draft, [draft]);
 
   const {
     register,
     handleSubmit,
     formState: { errors }
-  } = useForm<Values>({
+  } = useForm<DocumentGeneratorValues>({
     resolver: zodResolver(schema),
     defaultValues
   });

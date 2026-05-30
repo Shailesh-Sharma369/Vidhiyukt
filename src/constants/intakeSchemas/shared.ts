@@ -102,3 +102,27 @@ export const transferMechanismQuestionOptions = [
   { value: 'intra-group', label: 'Intra-group transfer agreement' },
   { value: 'other', label: 'Other transfer safeguard' }
 ] as const satisfies readonly QuestionOption[];
+
+export const lawfulBasisQuestionOptions = [
+  { value: 'consent', label: 'Consent' },
+  { value: 'contract', label: 'Contract necessity' },
+  { value: 'legal-obligation', label: 'Legal obligation' },
+  { value: 'vital-interests', label: 'Vital interests' },
+  { value: 'public-task', label: 'Public task / official authority' },
+  { value: 'legitimate-interests', label: 'Legitimate interests' }
+] as const satisfies readonly QuestionOption[];
+
+export const consentManagementQuestionOptions = [
+  { value: 'granular-consent', label: 'Granular consent choices' },
+  { value: 'withdrawal-available', label: 'Consent withdrawal available' },
+  { value: 'consent-log', label: 'Consent logging and audit trail' },
+  { value: 'parental-consent', label: 'Parental consent flow' },
+  { value: 're-consent', label: 'Re-consent on purpose change' }
+] as const satisfies readonly QuestionOption[];
+
+export const grievanceContactQuestionOptions = [
+  { value: 'email', label: 'Email' },
+  { value: 'web-form', label: 'Web form' },
+  { value: 'postal-mail', label: 'Postal mail' },
+  { value: 'phone', label: 'Phone' }
+] as const satisfies readonly QuestionOption[];
