@@ -1,17 +1,11 @@
-export type DocumentType =
-  | 'Privacy Policy'
-  | 'DPA'
-  | 'Terms of Service'
-  | 'Cookie Notice'
-  | 'Data Retention Policy'
-  | 'Vendor Agreement';
+import type { DocumentType, JurisdictionType } from './intake';
 
 export type DocumentStatus = 'draft' | 'generated' | 'reviewed' | 'published';
 
 export type DocumentDraft = {
   companyName: string;
   documentType: DocumentType;
-  jurisdiction: 'GDPR' | 'DPDP' | 'Both';
+  jurisdiction: JurisdictionType | 'Both';
   tone: 'formal' | 'balanced' | 'concise';
   productSummary: string;
   dataCategories: string;
