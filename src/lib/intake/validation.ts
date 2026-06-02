@@ -1,7 +1,7 @@
 import type { IntakeAnswerMap, Question, IntakeSchema } from '@/types';
 import { isQuestionVisible } from './schemaHelpers';
 
-function isEmptyValue(value: unknown): boolean {
+export function isEmptyValue(value: unknown): boolean {
   if (value === undefined || value === null) {
     return true;
   }
