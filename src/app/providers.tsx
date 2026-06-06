@@ -10,6 +10,7 @@ import { syncUserProfile } from '@/services/firestore/users';
 import { showToast } from '@/store/toastStore';
 import { firebaseReady } from '@/config/firebase';
 import { createLogger } from '@/lib/logger';
+import { IntakeBootstrap } from '@/providers/intake-bootstrap';
 
 const bootstrapLogger = createLogger('firestore][bootstrap');
 
@@ -105,6 +106,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
       <ThemeBootstrap />
       <AuthBootstrap />
       <FirestoreBootstrap />
+      <IntakeBootstrap />
       <ToastViewport />
       {children}
     </QueryClientProvider>
