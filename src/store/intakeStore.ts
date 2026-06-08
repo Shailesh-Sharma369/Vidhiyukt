@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createLogger } from '@/lib/logger';
 import { createRuntimeEngine, type RuntimeState } from '@/lib/intake/runtime/runtimeEngine';
+import { autoSave, resetAutoSaveState } from '@/store/middleware/autoSaveMiddleware';
 import { showToast } from '@/store/toastStore';
 import type { IntakeAnswerValue, IntakeSchema } from '@/types';
 
@@ -16,6 +17,7 @@ export type IntakeStore = {
   initialize: (schema: IntakeSchema, schemaId: string) => Promise<void>;
   updateAnswer: (nodeId: string, value: unknown) => Promise<void>;
   reset: () => Promise<void>;
+  resetIntakeState: () => void;
 };
 
 const intakeLogger = createLogger('intake');
@@ -54,14 +56,25 @@ function isIntakeAnswerValue(value: unknown): value is IntakeAnswerValue {
   );
 }
 
-export const useIntakeStore = create<IntakeStore>()((set, get) => ({
-  engine: null,
-  runtimeState: null,
-  activeSchemaId: null,
-  initialized: false,
-  isHydrating: false,
-  error: null,
-  initialize: async (schema, schemaId) => {
+function createInitialState(): Pick<
+  IntakeStore,
+  'engine' | 'runtimeState' | 'activeSchemaId' | 'initialized' | 'isHydrating' | 'error'
+> {
+  return {
+    engine: null,
+    runtimeState: null,
+    activeSchemaId: null,
+    initialized: false,
+    isHydrating: false,
+    error: null
+  };
+}
+
+export const useIntakeStore = create<IntakeStore>()(
+  autoSave<IntakeStore>(
+    (set, get) => ({
+      ...createInitialState(),
+      initialize: async (schema, schemaId) => {
     if (schemaId.trim().length === 0) {
       const error = new Error('A valid intake schema id is required.');
       intakeLogger.error('initialize failed', { error, schemaId });
@@ -129,7 +142,7 @@ export const useIntakeStore = create<IntakeStore>()((set, get) => ({
 
     return initializePromise;
   },
-  updateAnswer: async (nodeId, value) => {
+      updateAnswer: async (nodeId, value) => {
     const engine = get().engine;
 
     if (!engine) {
@@ -154,7 +167,7 @@ export const useIntakeStore = create<IntakeStore>()((set, get) => ({
       throw error;
     }
   },
-  reset: async () => {
+      reset: async () => {
     const engine = get().engine;
 
     if (!engine) {
@@ -172,8 +185,31 @@ export const useIntakeStore = create<IntakeStore>()((set, get) => ({
       emitIntakeError(set, 'Intake reset failed', 'Failed to reset the intake flow.', error);
       throw error;
     }
-  }
-}));
+  },
+      resetIntakeState: () => {
+        const engine = get().engine;
+
+        resetAutoSaveState();
+        cleanupRuntimeSubscription();
+        initializePromise = null;
+        initializingSchemaId = null;
+
+        if (engine) {
+          try {
+            engine.reset();
+          } catch (error) {
+            intakeLogger.warn('resetIntakeState engine reset failed', { error });
+          }
+        }
+
+        set({
+          ...createInitialState()
+        });
+      }
+    }),
+    { delay: 500 }
+  )
+);
 
 export function stopIntakeSubscription() {
   cleanupRuntimeSubscription();

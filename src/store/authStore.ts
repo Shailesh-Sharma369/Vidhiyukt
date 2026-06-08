@@ -140,6 +140,8 @@ export const useAuthStore = create<AuthStore>()((set, get) => ({
 
     try {
       await signOut();
+      const { useIntakeStore } = await import('@/store/intakeStore');
+      useIntakeStore.getState().resetIntakeState();
       set({ user: null, status: 'anonymous', initialized: true, error: null });
     } catch (error) {
       emitAuthError(set, error);

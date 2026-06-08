@@ -1,0 +1,211 @@
+import 'fake-indexeddb/auto';
+import { openDB } from 'idb';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { IntakeDraftPersistence } from './intakePersistence';
+import { decryptData, encryptData } from './encryption';
+
+vi.mock('./encryption', () => ({
+  encryptData: vi.fn(async (plainText: string) => `encrypted:${plainText}`),
+  decryptData: vi.fn(async (cipherText: string) => {
+    if (!cipherText.startsWith('encrypted:')) {
+      throw new Error('Encrypted payload could not be decrypted.');
+    }
+
+    return cipherText.slice('encrypted:'.length);
+  })
+}));
+
+const DATABASE_NAME = 'vidhiyukt-intake';
+const DRAFT_STORE_NAME = 'drafts';
+const DRAFT_KEY_PREFIX = 'intake-draft:';
+
+const baseDraft: IntakeDraftPersistence = {
+  answers: { q1: 'answer', q2: true, q3: ['alpha', 'beta'] },
+  currentStep: 2,
+  timestamp: '2026-06-08T10:15:30.000Z'
+};
+
+type PersistenceModule = typeof import('./intakePersistence');
+
+type MutableGlobal = typeof globalThis & {
+  window?: typeof globalThis;
+};
+
+function getWindowTarget(): typeof globalThis {
+  const mutableGlobal = globalThis as MutableGlobal;
+
+  if (!mutableGlobal.window) {
+    Object.defineProperty(mutableGlobal, 'window', {
+      configurable: true,
+      writable: true,
+      value: globalThis
+    });
+  }
+
+  return mutableGlobal.window;
+}
+
+function setIndexedDbAvailability(isAvailable: boolean): void {
+  const windowTarget = getWindowTarget();
+
+  if (isAvailable) {
+    Object.defineProperty(windowTarget, 'indexedDB', {
+      configurable: true,
+      writable: true,
+      value: globalThis.indexedDB
+    });
+    return;
+  }
+
+  Object.defineProperty(windowTarget, 'indexedDB', {
+    configurable: true,
+    writable: true,
+    value: undefined
+  });
+}
+
+function deleteDatabase(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = globalThis.indexedDB.deleteDatabase(name);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error ?? new Error(`Failed to delete database "${name}".`));
+    request.onblocked = () => reject(new Error(`Deleting database "${name}" was blocked.`));
+  });
+}
+
+async function resetPersistenceEnvironment(): Promise<void> {
+  setIndexedDbAvailability(true);
+  vi.clearAllMocks();
+  vi.resetModules();
+  await deleteDatabase(DATABASE_NAME);
+}
+
+async function loadPersistenceModule(): Promise<PersistenceModule> {
+  return import('./intakePersistence');
+}
+
+async function openPersistenceDatabase() {
+  return openDB(DATABASE_NAME, 1);
+}
+
+function getDraftStorageKey(schemaId: string): string {
+  return `${DRAFT_KEY_PREFIX}${schemaId}`;
+}
+
+async function readStoredRecord(schemaId: string): Promise<unknown> {
+  const database = await openPersistenceDatabase();
+
+  try {
+    return await database.get(DRAFT_STORE_NAME, getDraftStorageKey(schemaId));
+  } finally {
+    database.close();
+  }
+}
+
+async function writeStoredRecord(key: string, value: unknown): Promise<void> {
+  const database = await openPersistenceDatabase();
+
+  try {
+    await database.put(DRAFT_STORE_NAME, value, key);
+  } finally {
+    database.close();
+  }
+}
+
+async function waitForAssertion(assertion: () => Promise<void>, attempts = 20): Promise<void> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Assertion did not pass within the retry window.');
+}
+
+describe('intakePersistence', () => {
+  beforeEach(async () => {
+    await resetPersistenceEnvironment();
+  });
+
+  it('listSavedIntakes returns an empty array when no drafts exist', async () => {
+    const { listSavedIntakes } = await loadPersistenceModule();
+
+    await expect(listSavedIntakes()).resolves.toEqual([]);
+  });
+
+  it('listSavedIntakes returns all schema IDs after saving multiple drafts', async () => {
+    const { listSavedIntakes, saveIntakeDraft } = await loadPersistenceModule();
+
+    await saveIntakeDraft('schema-one', baseDraft);
+    await saveIntakeDraft('schema-two', {
+      ...baseDraft,
+      currentStep: 4,
+      timestamp: '2026-06-08T11:15:30.000Z'
+    });
+
+    const savedSchemaIds = await listSavedIntakes();
+
+    expect(savedSchemaIds).toEqual(['schema-one', 'schema-two']);
+  });
+
+  it('listSavedIntakes filters out invalid keys', async () => {
+    const { listSavedIntakes, saveIntakeDraft } = await loadPersistenceModule();
+
+    await saveIntakeDraft('valid-schema', baseDraft);
+    await writeStoredRecord('unexpected-key', { cipherText: 'encrypted:{}' });
+
+    await expect(listSavedIntakes()).resolves.toEqual(['valid-schema']);
+  });
+
+  it('migrates a legacy plain draft to an encrypted record after load', async () => {
+    const { loadIntakeDraft } = await loadPersistenceModule();
+    const schemaId = 'legacy-schema';
+
+    await writeStoredRecord(getDraftStorageKey(schemaId), baseDraft);
+
+    await expect(loadIntakeDraft(schemaId)).resolves.toEqual(baseDraft);
+
+    await waitForAssertion(async () => {
+      const storedRecord = await readStoredRecord(schemaId);
+      expect(storedRecord).toEqual({
+        cipherText: `encrypted:${JSON.stringify(baseDraft)}`
+      });
+    });
+
+    await expect(loadIntakeDraft(schemaId)).resolves.toEqual(baseDraft);
+  });
+
+  it('deletes corrupted encrypted records and returns null', async () => {
+    const { loadIntakeDraft } = await loadPersistenceModule();
+    const schemaId = 'corrupted-schema';
+
+    vi.mocked(decryptData).mockRejectedValueOnce(new Error('Encrypted payload is invalid or corrupted.'));
+    await writeStoredRecord(getDraftStorageKey(schemaId), { cipherText: 'broken-payload' });
+
+    await expect(loadIntakeDraft(schemaId)).resolves.toBeNull();
+    await expect(readStoredRecord(schemaId)).resolves.toBeUndefined();
+  });
+
+  it('handles IndexedDB unavailability gracefully across all operations', async () => {
+    const { clearIntakeDraft, listSavedIntakes, loadIntakeDraft, saveIntakeDraft } =
+      await loadPersistenceModule();
+
+    setIndexedDbAvailability(false);
+
+    await expect(saveIntakeDraft('no-db', baseDraft)).resolves.toBeUndefined();
+    await expect(loadIntakeDraft('no-db')).resolves.toBeNull();
+    await expect(listSavedIntakes()).resolves.toEqual([]);
+    await expect(clearIntakeDraft('no-db')).resolves.toBeUndefined();
+    expect(encryptData).not.toHaveBeenCalled();
+  });
+});
