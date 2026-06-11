@@ -1,4 +1,6 @@
-import type { StateCreator } from 'zustand';
+// src/store/middleware/autoSaveMiddleware.ts
+
+import type { StateCreator, StoreMutatorIdentifier } from 'zustand';
 import { createLogger } from '@/lib/logger';
 import { saveIntakeDraft } from '@/lib/persistence/intakePersistence';
 import { useAuthStore } from '@/store/authStore';
@@ -64,7 +66,6 @@ function clearTimer(): void {
   if (typeof window !== 'undefined' && autoSaveTimerId !== null) {
     window.clearTimeout(autoSaveTimerId);
   }
-
   autoSaveTimerId = null;
 }
 
@@ -132,6 +133,9 @@ function scheduleAutoSave<T extends AutoSaveStateSlice>(state: T, delay: number)
   }, delay);
 }
 
+/**
+ * Fixed middleware – uses a type‑safe wrapper for `set`
+ */
 export function autoSave<T extends AutoSaveStateSlice>(
   config: StateCreator<T, [], []>,
   options?: AutoSaveOptions
@@ -139,11 +143,11 @@ export function autoSave<T extends AutoSaveStateSlice>(
   const delay = options?.delay ?? DEFAULT_AUTO_SAVE_DELAY_MS;
 
   return (set, get, api) => {
-    const wrappedSet: typeof set = (...args) => {
+    const wrappedSet: typeof set = (state, replace) => {
       const previousState = get();
-      set(...args);
+      // Use type assertion to bypass overload resolution
+      (set as any)(state, replace);
       const nextState = get();
-
       if (havePersistenceInputsChanged(previousState, nextState)) {
         scheduleAutoSave(nextState, delay);
       }

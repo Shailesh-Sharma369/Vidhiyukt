@@ -4,6 +4,8 @@ import { createRuntimeEngine, type RuntimeState } from '@/lib/intake/runtime/run
 import { autoSave, resetAutoSaveState } from '@/store/middleware/autoSaveMiddleware';
 import { showToast } from '@/store/toastStore';
 import type { IntakeAnswerValue, IntakeSchema } from '@/types';
+import { sanitizeByType } from '@/lib/intake/sanitization';
+import { getIntakeSchema } from '@/constants/intakeSchemas';
 
 export type IntakeRuntimeEngine = ReturnType<typeof createRuntimeEngine>;
 
@@ -75,117 +77,148 @@ export const useIntakeStore = create<IntakeStore>()(
     (set, get) => ({
       ...createInitialState(),
       initialize: async (schema, schemaId) => {
-    if (schemaId.trim().length === 0) {
-      const error = new Error('A valid intake schema id is required.');
-      intakeLogger.error('initialize failed', { error, schemaId });
-      emitIntakeError(set, 'Intake initialization failed', 'Failed to initialize the intake flow.', error);
-      throw error;
-    }
+        if (schemaId.trim().length === 0) {
+          const error = new Error('A valid intake schema id is required.');
+          intakeLogger.error('initialize failed', { error, schemaId });
+          emitIntakeError(set, 'Intake initialization failed', 'Failed to initialize the intake flow.', error);
+          throw error;
+        }
 
-    if (get().initialized && get().engine && get().runtimeState && get().activeSchemaId === schemaId) {
-      return;
-    }
+        if (get().initialized && get().engine && get().runtimeState && get().activeSchemaId === schemaId) {
+          return;
+        }
 
-    if (initializePromise) {
-      if (initializingSchemaId === schemaId) {
+        if (initializePromise) {
+          if (initializingSchemaId === schemaId) {
+            return initializePromise;
+          }
+
+          await initializePromise;
+          return get().initialize(schema, schemaId);
+        }
+
+        initializingSchemaId = schemaId;
+        initializePromise = (async () => {
+          set({ isHydrating: true, error: null });
+
+          try {
+            cleanupRuntimeSubscription();
+
+            const engine = createRuntimeEngine(schema);
+            unsubscribeRuntime = engine.subscribe((runtimeState) => {
+              set({ runtimeState, error: null });
+            });
+
+            const runtimeState = engine.getState();
+
+            set({
+              engine,
+              runtimeState,
+              activeSchemaId: schemaId,
+              initialized: true,
+              isHydrating: false,
+              error: null
+            });
+
+            intakeLogger.debug('initialize success', {
+              schemaId,
+              visibleQuestionCount: runtimeState.visibleQuestions.length
+            });
+          } catch (error) {
+            cleanupRuntimeSubscription();
+            intakeLogger.error('initialize failed', { error });
+            emitIntakeError(set, 'Intake initialization failed', 'Failed to initialize the intake flow.', error);
+            set({
+              engine: null,
+              runtimeState: null,
+              activeSchemaId: null,
+              initialized: false,
+              isHydrating: false
+            });
+            throw error;
+          } finally {
+            initializePromise = null;
+            initializingSchemaId = null;
+          }
+        })();
+
         return initializePromise;
-      }
-
-      await initializePromise;
-      return get().initialize(schema, schemaId);
-    }
-
-    initializingSchemaId = schemaId;
-    initializePromise = (async () => {
-      set({ isHydrating: true, error: null });
-
-      try {
-        cleanupRuntimeSubscription();
-
-        const engine = createRuntimeEngine(schema);
-        unsubscribeRuntime = engine.subscribe((runtimeState) => {
-          set({ runtimeState, error: null });
-        });
-
-        const runtimeState = engine.getState();
-
-        set({
-          engine,
-          runtimeState,
-          activeSchemaId: schemaId,
-          initialized: true,
-          isHydrating: false,
-          error: null
-        });
-
-        intakeLogger.debug('initialize success', {
-          schemaId,
-          visibleQuestionCount: runtimeState.visibleQuestions.length
-        });
-      } catch (error) {
-        cleanupRuntimeSubscription();
-        intakeLogger.error('initialize failed', { error });
-        emitIntakeError(set, 'Intake initialization failed', 'Failed to initialize the intake flow.', error);
-        set({
-          engine: null,
-          runtimeState: null,
-          activeSchemaId: null,
-          initialized: false,
-          isHydrating: false
-        });
-        throw error;
-      } finally {
-        initializePromise = null;
-        initializingSchemaId = null;
-      }
-    })();
-
-    return initializePromise;
-  },
+      },
       updateAnswer: async (nodeId, value) => {
-    const engine = get().engine;
+        const engine = get().engine;
+        const activeSchemaId = get().activeSchemaId;
 
-    if (!engine) {
-      const error = new Error('Intake engine is not initialized.');
-      intakeLogger.error('updateAnswer failed', { nodeId, error });
-      emitIntakeError(set, 'Intake update failed', 'The intake flow is not ready yet.', error);
-      throw error;
-    }
+        if (!engine || !activeSchemaId) {
+          const error = new Error('Intake engine or schema not initialized.');
+          intakeLogger.error('updateAnswer failed', { nodeId, error });
+          emitIntakeError(set, 'Intake update failed', 'The intake flow is not ready yet.', error);
+          throw error;
+        }
 
-    if (!isIntakeAnswerValue(value)) {
-      const error = new Error('Unsupported intake answer value.');
-      intakeLogger.warn('updateAnswer rejected invalid value', { nodeId, valueType: typeof value });
-      emitIntakeError(set, 'Intake update failed', 'The provided answer value is not supported.', error);
-      throw error;
-    }
+        // Get the current schema to fetch question metadata
+        const schema = getIntakeSchema(activeSchemaId);
+        if (!schema) {
+          const error = new Error(`Schema "${activeSchemaId}" not found.`);
+          intakeLogger.error('updateAnswer failed', { nodeId, error });
+          emitIntakeError(set, 'Intake update failed', 'Schema missing.', error);
+          throw error;
+        }
 
-    try {
-      engine.updateAnswer(nodeId, value);
-    } catch (error) {
-      intakeLogger.error('updateAnswer failed', { nodeId, error });
-      emitIntakeError(set, 'Intake update failed', 'Failed to update the intake answer.', error);
-      throw error;
-    }
-  },
+        // Find the question definition
+        const question = schema.questions.find((q) => q.id === nodeId);
+        if (!question) {
+          const error = new Error(`Question "${nodeId}" not found in schema.`);
+          intakeLogger.error('updateAnswer failed', { nodeId, error });
+          emitIntakeError(set, 'Intake update failed', 'Question not found.', error);
+          throw error;
+        }
+
+        // --- SANITIZATION ---
+        const sanitizedValue = sanitizeByType(
+          value,
+          question.type,
+          question.inputMode,
+          question.options,
+          question.validation?.maxLength,
+          question.validation?.maxSelections
+        );
+
+        // Optional: if you still want to validate that the sanitized value is of the correct type
+        // (the sanitizer already returns a safe value, but you can keep the check)
+        if (!isIntakeAnswerValue(sanitizedValue)) {
+          const error = new Error('Sanitized value is not a valid intake answer type.');
+          intakeLogger.warn('updateAnswer rejected sanitized value', { nodeId, sanitizedValue });
+          emitIntakeError(set, 'Intake update failed', 'The provided answer could not be sanitized.', error);
+          throw error;
+        }
+
+        try {
+          engine.updateAnswer(nodeId, sanitizedValue);
+        } catch (error) {
+          intakeLogger.error('updateAnswer failed', { nodeId, error });
+          emitIntakeError(set, 'Intake update failed', 'Failed to update the intake answer.', error);
+          throw error;
+        }
+      },
       reset: async () => {
-    const engine = get().engine;
+        const engine = get().engine;
 
-    if (!engine) {
-      const error = new Error('Intake engine is not initialized.');
-      intakeLogger.error('reset failed', { error });
-      emitIntakeError(set, 'Intake reset failed', 'The intake flow is not ready yet.', error);
-      throw error;
-    }
+        if (!engine) {
+          const error = new Error('Intake engine is not initialized.');
+          intakeLogger.error('reset failed', { error });
+          emitIntakeError(set, 'Intake reset failed', 'The intake flow is not ready yet.', error);
+          throw error;
+        }
 
-    try {
-      const runtimeState = engine.reset();
-      set({ runtimeState, error: null });
-    } catch (error) {
-      intakeLogger.error('reset failed', { error });
-      emitIntakeError(set, 'Intake reset failed', 'Failed to reset the intake flow.', error);
-      throw error;
-    }
-  },
+        try {
+          const runtimeState = engine.reset();
+          set({ runtimeState, error: null });
+        } catch (error) {
+          intakeLogger.error('reset failed', { error });
+          emitIntakeError(set, 'Intake reset failed', 'Failed to reset the intake flow.', error);
+          throw error;
+        }
+      },
       resetIntakeState: () => {
         const engine = get().engine;
 
