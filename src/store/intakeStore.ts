@@ -1,3 +1,5 @@
+// src/store/intakeStore.ts
+
 import { create } from 'zustand';
 import { createLogger } from '@/lib/logger';
 import { createRuntimeEngine, type RuntimeState } from '@/lib/intake/runtime/runtimeEngine';
@@ -6,20 +8,36 @@ import { showToast } from '@/store/toastStore';
 import type { IntakeAnswerValue, IntakeSchema } from '@/types';
 import { sanitizeByType } from '@/lib/intake/sanitization';
 import { getIntakeSchema } from '@/constants/intakeSchemas';
+import { getNextVisibleSection, getPreviousVisibleSection } from '@/lib/intake/runtime/workflowEngine';
+import { computeErrors } from '@/lib/intake-ui/validationHelpers';
 
 export type IntakeRuntimeEngine = ReturnType<typeof createRuntimeEngine>;
 
 export type IntakeStore = {
+  // Core
   engine: IntakeRuntimeEngine | null;
   runtimeState: RuntimeState | null;
   activeSchemaId: string | null;
   initialized: boolean;
-  isHydrating: boolean;
   error: string | null;
+
+  // UI & validation
+  errors: Record<string, string[]>;
+  touched: Record<string, boolean>;
+  isDraftHydrated: boolean;         // renamed – true after draft restored
+  currentSectionId: string | null;
+
+  // Actions
   initialize: (schema: IntakeSchema, schemaId: string) => Promise<void>;
   updateAnswer: (nodeId: string, value: unknown) => Promise<void>;
   reset: () => Promise<void>;
   resetIntakeState: () => void;
+  markTouched: (questionId: string) => void;
+  validateCurrentAnswers: () => void;
+  goToNextSection: () => void;
+  goToPreviousSection: () => void;
+  setDraftHydrated: (hydrated: boolean) => void;
+  setCurrentSection: (sectionId: string | null) => void;
 };
 
 const intakeLogger = createLogger('intake');
@@ -35,13 +53,8 @@ function cleanupRuntimeSubscription() {
 
 function emitIntakeError(set: (partial: Partial<IntakeStore>) => void, title: string, fallbackMessage: string, error: unknown) {
   const message = error instanceof Error ? error.message : fallbackMessage;
-
   set({ error: message });
-  showToast({
-    title,
-    description: message,
-    variant: 'error'
-  });
+  showToast({ title, description: message, variant: 'error' });
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -60,15 +73,26 @@ function isIntakeAnswerValue(value: unknown): value is IntakeAnswerValue {
 
 function createInitialState(): Pick<
   IntakeStore,
-  'engine' | 'runtimeState' | 'activeSchemaId' | 'initialized' | 'isHydrating' | 'error'
+  | 'engine'
+  | 'runtimeState'
+  | 'activeSchemaId'
+  | 'initialized'
+  | 'error'
+  | 'errors'
+  | 'touched'
+  | 'isDraftHydrated'
+  | 'currentSectionId'
 > {
   return {
     engine: null,
     runtimeState: null,
     activeSchemaId: null,
     initialized: false,
-    isHydrating: false,
-    error: null
+    error: null,
+    errors: {},
+    touched: {},
+    isDraftHydrated: false,
+    currentSectionId: null,
   };
 }
 
@@ -76,6 +100,7 @@ export const useIntakeStore = create<IntakeStore>()(
   autoSave<IntakeStore>(
     (set, get) => ({
       ...createInitialState(),
+
       initialize: async (schema, schemaId) => {
         if (schemaId.trim().length === 0) {
           const error = new Error('A valid intake schema id is required.');
@@ -92,37 +117,45 @@ export const useIntakeStore = create<IntakeStore>()(
           if (initializingSchemaId === schemaId) {
             return initializePromise;
           }
-
           await initializePromise;
           return get().initialize(schema, schemaId);
         }
 
         initializingSchemaId = schemaId;
         initializePromise = (async () => {
-          set({ isHydrating: true, error: null });
+          set({ error: null });
 
           try {
             cleanupRuntimeSubscription();
 
             const engine = createRuntimeEngine(schema);
             unsubscribeRuntime = engine.subscribe((runtimeState) => {
-              set({ runtimeState, error: null });
+              // Revalidate using the helper
+              const newErrors = computeErrors(schema, runtimeState.answers);
+              set((state) => ({
+                runtimeState,
+                errors: newErrors,
+                error: null,
+              }));
             });
 
             const runtimeState = engine.getState();
+            const initialErrors = computeErrors(schema, runtimeState.answers);
+            const firstVisibleSection = runtimeState.visibleQuestions[0]?.sectionId ?? null;
 
             set({
               engine,
               runtimeState,
               activeSchemaId: schemaId,
               initialized: true,
-              isHydrating: false,
-              error: null
+              errors: initialErrors,
+              error: null,
+              currentSectionId: firstVisibleSection,
             });
 
             intakeLogger.debug('initialize success', {
               schemaId,
-              visibleQuestionCount: runtimeState.visibleQuestions.length
+              visibleQuestionCount: runtimeState.visibleQuestions.length,
             });
           } catch (error) {
             cleanupRuntimeSubscription();
@@ -133,7 +166,7 @@ export const useIntakeStore = create<IntakeStore>()(
               runtimeState: null,
               activeSchemaId: null,
               initialized: false,
-              isHydrating: false
+              errors: {},
             });
             throw error;
           } finally {
@@ -144,6 +177,7 @@ export const useIntakeStore = create<IntakeStore>()(
 
         return initializePromise;
       },
+
       updateAnswer: async (nodeId, value) => {
         const engine = get().engine;
         const activeSchemaId = get().activeSchemaId;
@@ -155,7 +189,6 @@ export const useIntakeStore = create<IntakeStore>()(
           throw error;
         }
 
-        // Get the current schema to fetch question metadata
         const schema = getIntakeSchema(activeSchemaId);
         if (!schema) {
           const error = new Error(`Schema "${activeSchemaId}" not found.`);
@@ -164,7 +197,6 @@ export const useIntakeStore = create<IntakeStore>()(
           throw error;
         }
 
-        // Find the question definition
         const question = schema.questions.find((q) => q.id === nodeId);
         if (!question) {
           const error = new Error(`Question "${nodeId}" not found in schema.`);
@@ -173,7 +205,7 @@ export const useIntakeStore = create<IntakeStore>()(
           throw error;
         }
 
-        // --- SANITIZATION ---
+        // Sanitize
         const sanitizedValue = sanitizeByType(
           value,
           question.type,
@@ -183,8 +215,6 @@ export const useIntakeStore = create<IntakeStore>()(
           question.validation?.maxSelections
         );
 
-        // Optional: if you still want to validate that the sanitized value is of the correct type
-        // (the sanitizer already returns a safe value, but you can keep the check)
         if (!isIntakeAnswerValue(sanitizedValue)) {
           const error = new Error('Sanitized value is not a valid intake answer type.');
           intakeLogger.warn('updateAnswer rejected sanitized value', { nodeId, sanitizedValue });
@@ -194,15 +224,16 @@ export const useIntakeStore = create<IntakeStore>()(
 
         try {
           engine.updateAnswer(nodeId, sanitizedValue);
+          // The subscription will revalidate via computeErrors
         } catch (error) {
           intakeLogger.error('updateAnswer failed', { nodeId, error });
           emitIntakeError(set, 'Intake update failed', 'Failed to update the intake answer.', error);
           throw error;
         }
       },
+
       reset: async () => {
         const engine = get().engine;
-
         if (!engine) {
           const error = new Error('Intake engine is not initialized.');
           intakeLogger.error('reset failed', { error });
@@ -212,16 +243,25 @@ export const useIntakeStore = create<IntakeStore>()(
 
         try {
           const runtimeState = engine.reset();
-          set({ runtimeState, error: null });
+          const schema = getIntakeSchema(get().activeSchemaId!);
+          const newErrors = schema ? computeErrors(schema, runtimeState.answers) : {};
+          const firstVisibleSection = runtimeState.visibleQuestions[0]?.sectionId ?? null;
+          set({
+            runtimeState,
+            errors: newErrors,
+            touched: {},
+            error: null,
+            currentSectionId: firstVisibleSection,
+          });
         } catch (error) {
           intakeLogger.error('reset failed', { error });
           emitIntakeError(set, 'Intake reset failed', 'Failed to reset the intake flow.', error);
           throw error;
         }
       },
+
       resetIntakeState: () => {
         const engine = get().engine;
-
         resetAutoSaveState();
         cleanupRuntimeSubscription();
         initializePromise = null;
@@ -235,10 +275,62 @@ export const useIntakeStore = create<IntakeStore>()(
           }
         }
 
-        set({
-          ...createInitialState()
-        });
-      }
+        set(createInitialState());
+      },
+
+      markTouched: (questionId) => {
+        set((state) => ({
+          touched: { ...state.touched, [questionId]: true },
+        }));
+      },
+
+      validateCurrentAnswers: () => {
+        const runtimeState = get().runtimeState;
+        const activeSchemaId = get().activeSchemaId;
+        if (!runtimeState || !activeSchemaId) return;
+        const schema = getIntakeSchema(activeSchemaId);
+        if (!schema) return;
+        const newErrors = computeErrors(schema, runtimeState.answers);
+        set({ errors: newErrors });
+      },
+
+      goToNextSection: () => {
+        const runtimeState = get().runtimeState;
+        const activeSchemaId = get().activeSchemaId;
+        const currentSectionId = get().currentSectionId;
+        if (!runtimeState || !activeSchemaId || !currentSectionId) return;
+
+        const schema = getIntakeSchema(activeSchemaId);
+        if (!schema) return;
+
+        const nextSectionId = getNextVisibleSection(schema, runtimeState.answers, currentSectionId);
+        if (nextSectionId) {
+          set({ currentSectionId: nextSectionId });
+        }
+      },
+
+      goToPreviousSection: () => {
+        const runtimeState = get().runtimeState;
+        const activeSchemaId = get().activeSchemaId;
+        const currentSectionId = get().currentSectionId;
+        if (!runtimeState || !activeSchemaId || !currentSectionId) return;
+
+        const schema = getIntakeSchema(activeSchemaId);
+        if (!schema) return;
+
+        const prevSectionId = getPreviousVisibleSection(schema, runtimeState.answers, currentSectionId);
+        if (prevSectionId) {
+          set({ currentSectionId: prevSectionId });
+        }
+      },
+
+      setDraftHydrated: (hydrated) => {
+        set({ isDraftHydrated: hydrated });
+      },
+
+      setCurrentSection: (sectionId) => {
+        set({ currentSectionId: sectionId });
+      },
     }),
     { delay: 500 }
   )

@@ -1,3 +1,5 @@
+// src/providers/intake-bootstrap.tsx
+
 import { useEffect, useRef } from 'react';
 import { defaultIntakeSchemaId, getIntakeSchema, isIntakeSchemaId } from '@/constants/intakeSchemas';
 import { createLogger } from '@/lib/logger';
@@ -35,6 +37,7 @@ export function IntakeBootstrap() {
   const userId = useAuthStore((state) => state.user?.uid ?? 'guest');
   const initialize = useIntakeStore((state) => state.initialize);
   const updateAnswer = useIntakeStore((state) => state.updateAnswer);
+  const setDraftHydrated = useIntakeStore((state) => state.setDraftHydrated);
   const activeSchemaId = useIntakeStore((state) => state.activeSchemaId);
 
   const isMountedRef = useRef(true);
@@ -100,6 +103,7 @@ export function IntakeBootstrap() {
 
         if (!persistedDraft) {
           hydratedDraftKeys.add(hydrationKey);
+          setDraftHydrated(true);
           return;
         }
 
@@ -117,6 +121,7 @@ export function IntakeBootstrap() {
         }
 
         hydratedDraftKeys.add(hydrationKey);
+        setDraftHydrated(true);
         intakeBootstrapLogger.debug('hydration success', {
           schemaId: resolvedSchemaId,
           userId,
@@ -126,6 +131,7 @@ export function IntakeBootstrap() {
         });
       } catch (error) {
         intakeBootstrapLogger.error('hydration failed', { error });
+        setDraftHydrated(true); // Still mark hydrated to avoid infinite loading, but with no draft
         if (isMountedRef.current) {
           showToast({
             title: 'Draft restore failed',
@@ -140,7 +146,7 @@ export function IntakeBootstrap() {
       hydrationPromise = null;
       hydratingDraftKey = null;
     });
-  }, [hydrationKey, initialize, resolvedSchemaId, updateAnswer, userId]);
+  }, [hydrationKey, initialize, resolvedSchemaId, updateAnswer, userId, setDraftHydrated]);
 
   return null;
 }

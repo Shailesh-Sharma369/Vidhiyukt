@@ -9,6 +9,7 @@ import { DashboardPage } from '@/pages/dashboard';
 import { GeneratorPage } from '@/pages/generator';
 import { AuditPage } from '@/pages/audit';
 import { ReportsPage } from '@/pages/reports';
+import { IntakeTestPage } from '@/pages/intake-test';
 
 export function AppRouter() {
   return (
@@ -30,6 +31,7 @@ export function AppRouter() {
           <Route path="/generate" element={<GeneratorPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/intake-test" element={<IntakeTestPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
